@@ -28,6 +28,26 @@ proxy-provided roots, host installers and external model/runtime containers need
 review. Backend botocore ships a fallback CA bundle but normally selects certifi
 when installed; the offline check verifies this effective bundle as well.
 
+## SAML metadata HTTPS validation
+
+The backend now passes `validate_cert=True` when fetching IdP metadata through
+python3-saml. Custom HTTPS metadata endpoints must present a valid, unexpired
+certificate for the requested hostname, chaining to a trusted CA. Untrusted,
+expired or mismatched certificates now fail instead of being accepted. No
+insecure retry or HTTPS-to-HTTP fallback is added, and failed metadata is not
+cached. The existing internal `http://keycloak:8080/...` development URL still
+works; enabling certificate validation does not require TLS for that HTTP URL.
+
+For an HTTPS IdP using a private CA, provide a PEM CA bundle to the **backend
+container**, mounted read-only (for example `/run/certs/idp-ca-bundle.pem`), and
+set that container's `SSL_CERT_FILE` to the mounted path. Include the normal
+public CA roots plus the organization's trusted CA certificates so other
+outgoing HTTPS connections retain their trust roots. This metadata loader uses
+urllib/OpenSSL's default certificate validation, so changing application certifi
+alone does not configure its private CA trust. Restart/recreate the backend to
+apply configuration and clear cached metadata. Do not disable verification or
+change host OS trust settings to work around an invalid IdP certificate.
+
 ## Local verification
 
 Build only the Python images (no application startup or production deployment).
@@ -53,12 +73,17 @@ docker run --rm --network none \
 docker run --rm --network none --entrypoint python open-genai-security-backend -m pip check
 docker run --rm --network none --entrypoint python open-genai-security-backend \
   -m compileall -q app shared
+docker run --rm --network none \
+  -v "$PWD/backend/tests:/tests:ro" \
+  --entrypoint python open-genai-security-backend \
+  -m unittest discover -s /tests -v
 ```
 
 Check all ten images; only backend and rag-app include `shared/`. The CA check
 makes no network requests. No Python test/lint/type configuration existed at the
-audited commit; image builds, dependency consistency, byte-compilation and
-isolated application import/health checks are the applicable Python checks.
+audited commit. This change adds standard-library unittest regressions for SAML
+metadata transport alongside image builds, dependency consistency,
+byte-compilation and isolated application import/health checks.
 
 ### Validation recorded for this change
 
@@ -68,6 +93,11 @@ application import/OpenAPI plus mocked health checks (without startup lifespans)
 Whisper's faster-whisper/ctranslate2/PyAV native imports passed without loading
 or downloading a model. The new CA checker also correctly rejected the original
 base image's pip CA bundle by the affected G3/AAA fingerprints.
+After the SAML follow-up, the backend was rebuilt and rechecked. Its three
+offline regression tests cover secure HTTPS parser invocation, continued
+internal HTTP parsing, and raw/wrapped certificate failures propagating without
+insecure fallback or cache entries. These tests failed against the previous
+backend image's `validate_cert=False` call before the application fix.
 
 Observed versions were Python 3.12.15, pip 26.2.2 (vendored certifi 2026.10.19),
 application certifi 2026.10.23 in the six HTTP-client images, and Debian
@@ -103,7 +133,8 @@ release/image is available; no speculative tar workaround is included here.
 
 Other application dependency pins are unchanged. Transitive dependencies remain
 unlocked; the new certifi minimum prevents older bundles from being selected.
-Existing HTTP endpoints and application TLS-verification policies are unchanged.
+Existing HTTP endpoints remain; SAML metadata HTTPS verification is now enforced.
+Other application TLS-verification policies are outside this focused change.
 Non-Python images (Node, nginx,
 Keycloak, Qdrant, SeaweedFS, Ollama) and existing deployed artifacts are outside
 this change. No production environment or real application API is contacted.
@@ -114,3 +145,4 @@ References:
 - [Python October 21 release and hash-verified pip bootstrap](https://blog.python.org/2026/10/python-3151-3149-31317/)
 - [Incident scope, affected roots and distribution updates](https://emudhra.we-have-a-problem.com/)
 - [Affected root certificate fingerprints](https://emudhra.we-have-a-problem.com/roots.json)
+- [python3-saml 1.16.0 metadata loader and secure certificate default](https://github.com/SAML-Toolkits/python3-saml/blob/v1.16.0/src/onelogin/saml2/idp_metadata_parser.py)
