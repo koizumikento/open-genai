@@ -71,7 +71,7 @@ def get_saml_settings() -> dict[str, Any]:
         return _settings_cache
 
     idp_data = OneLogin_Saml2_IdPMetadataParser.parse_remote(
-        IDP_METADATA_URL, validate_cert=False
+        IDP_METADATA_URL, validate_cert=True
     )
     idp_data["idp"] = _fix_idp_urls(idp_data["idp"])
 
